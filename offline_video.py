@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 import warnings
 import ssl
+import time
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -14,9 +15,11 @@ warnings.filterwarnings("ignore")
 ssl._create_default_https_context = ssl._create_unverified_context
 
 def check_dependencies():
-    """Check if ffmpeg is installed."""
+    """Check if ffmpeg is installed and supports libass (for burning subtitles)."""
     try:
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        # Check basic ffmpeg
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("Error: ffmpeg is not installed or not in PATH. Please install it (e.g., 'brew install ffmpeg').")
         sys.exit(1)
@@ -52,7 +55,7 @@ def download_video(url, output_dir):
         sys.exit(1)
         
     # Return the most recently modified file
-    return max(files, key=os.path.getmtime)
+    return str(max(files, key=os.path.getmtime))
 
 def transcribe_audio(video_path, model_size="base"):
     """Transcribe audio using OpenAI Whisper."""
@@ -90,14 +93,6 @@ def translate_srt(srt_path, target_lang="zh-CN"):
     
     # Simple SRT parser: translate only lines that are text (not index or simple timestamps)
     # A more robust parser would be better, but this works for standard Whisper output
-    
-    # We'll assume the structure:
-    # Index
-    # Timestamp
-    # Text
-    # (Blank line)
-    
-    is_text = False
     
     translated_srt_path = srt_path.replace('.srt', f'.{target_lang}.srt')
     
@@ -145,11 +140,66 @@ def embed_subtitles(video_path, srt_path):
         print("Warning: Failed to embed subtitles.")
         return None
 
+def burn_subtitles(video_path, srt_path):
+    """Burn subtitles into video (Hardsub) for web compatibility."""
+    print(f"Burning subtitles into {video_path}...")
+    
+    # Use temporary simple filenames to avoid ffmpeg escaping issues
+    video_dir = os.path.dirname(video_path)
+    temp_video = os.path.join(video_dir, "temp_video_input.mp4")
+    temp_srt = os.path.join(video_dir, "temp_subs_input.srt")
+    temp_output = os.path.join(video_dir, "temp_burning_output.mp4")
+    
+    final_output = str(video_path).replace(".mp4", ".burned.mp4")
+    
+    # Rename originals to temp
+    try:
+        os.rename(video_path, temp_video)
+        os.rename(srt_path, temp_srt)
+        
+        cmd = [
+            "ffmpeg",
+            "-i", temp_video,
+            "-vf", f"subtitles={os.path.basename(temp_srt)}",
+            "-c:a", "copy",
+            temp_output,
+            "-y"
+        ]
+        
+        # Run ffmpeg in the directory to keep paths simple for the filter
+        subprocess.run(cmd, cwd=video_dir, check=True)
+        
+        # Rename output
+        if os.path.exists(temp_output):
+            os.rename(temp_output, final_output)
+            print(f"Burned video saved to {final_output}")
+            return final_output
+        else:
+            print("Error: ffmpeg did not produce output.")
+            return None
+            
+    except subprocess.CalledProcessError as e:
+        print(f"Error during burning: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error during burning: {e}")
+        return None
+    finally:
+        # metadata restoration: Rename inputs back
+        if os.path.exists(temp_video):
+            os.rename(temp_video, video_path)
+        if os.path.exists(temp_srt):
+            os.rename(temp_srt, srt_path)
+        # Clean up partial output if failed
+        if os.path.exists(temp_output):
+            os.remove(temp_output)
+
 def main():
     parser = argparse.ArgumentParser(description="Download video and generate Chinese subtitles.")
     parser.add_argument("url", help="Video URL (YouTube/Vimeo)")
     parser.add_argument("--dir", default=".", help="Output directory")
     parser.add_argument("--model", default="turbo", help="Whisper model size (tiny, base, small, medium, large, turbo)")
+    parser.add_argument("--burn", action="store_true", help="Burn subtitles into video (hardsub) for web compatibility")
     
     args = parser.parse_args()
     
@@ -162,7 +212,13 @@ def main():
         video_path = download_video(args.url, args.dir)
         srt_path = transcribe_audio(video_path, args.model)
         translated_srt_path = translate_srt(srt_path)
+        
+        # Always create embedded (soft) for QuickTime
         embed_subtitles(video_path, translated_srt_path)
+        
+        # Optionally create burned (hard) for Web
+        if args.burn:
+            burn_subtitles(video_path, translated_srt_path)
         
         print("\nDone! Video and subtitles are ready.")
         

@@ -42,14 +42,15 @@ python3 offline_video.py "YOUR_VIDEO_URL_HERE" --model turbo
 ### Arguments
 - `URL`: The YouTube or Vimeo URL of the video (Required).
 - `--dir`: Output directory (Default: current directory).
-- `--model`: Whisper model size. Options: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. `turbo` is recommended for high accuracy and speed. (Default: `turbo`).
+- `--model`: Whisper model size. Options: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. `turbo` is recommended. (Default: `turbo`).
+- `--burn`: Burn subtitles into the video (hardsub) for web compatibility. This takes longer but ensures subtitles show on all players.
 
 ## Example
 
-To download "What is openBIM?":
+To download "What is openBIM?" and burn subtitles:
 
 ```bash
-python3 offline_video.py "https://www.youtube.com/watch?v=LsV3z27iSGc" --dir "downloads/openbim"
+python3 offline_video.py "https://www.youtube.com/watch?v=LsV3z27iSGc" --dir "downloads/openbim" --burn
 ```
 
 ### Output Files
