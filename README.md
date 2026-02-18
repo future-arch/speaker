@@ -44,6 +44,8 @@ python3 offline_video.py "YOUR_VIDEO_URL_HERE" --model turbo
 - `--dir`: Output directory (Default: current directory).
 - `--model`: Whisper model size. Options: `tiny`, `base`, `small`, `medium`, `large`, `turbo`. `turbo` is recommended. (Default: `turbo`).
 - `--burn`: Burn subtitles into the video (hardsub) for web compatibility. This takes longer but ensures subtitles show on all players.
+- `--font`: Specific font for burned subtitles (e.g., "Heiti SC", "Arial"). (Optional).
+- `--skip-existing`: Skip transcription/translation if files already exist. Useful for re-burning.
 
 ## Example
 

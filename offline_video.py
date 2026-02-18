@@ -47,18 +47,28 @@ def download_video(url, output_dir):
         sys.exit(1)
         
     # Find the downloaded file
-    # This is a bit simplistic, might need improvement to catch the exact filename yt-dlp used
-    # But for now, we'll search for the most recent mp4 file in the directory
     files = list(Path(output_dir).glob("*.mp4"))
     if not files:
         print("Error: Could not find downloaded video file.")
         sys.exit(1)
         
     # Return the most recently modified file
-    return str(max(files, key=os.path.getmtime))
+    # Exclude .embedded.mp4 and .burned.mp4 from detection to find the source
+    source_files = [f for f in files if not f.name.endswith('.embedded.mp4') and not f.name.endswith('.burned.mp4')]
+    if not source_files:
+        return str(max(files, key=os.path.getmtime))
+    return str(max(source_files, key=os.path.getmtime))
 
-def transcribe_audio(video_path, model_size="base"):
+def transcribe_audio(video_path, model_size="base", skip_existing=False):
     """Transcribe audio using OpenAI Whisper."""
+    output_dir = os.path.dirname(video_path)
+    audio_basename = os.path.basename(video_path).rsplit('.', 1)[0]
+    srt_path = os.path.join(output_dir, f"{audio_basename}.srt")
+
+    if skip_existing and os.path.exists(srt_path):
+        print(f"SRT file already exists at {srt_path}, skipping transcription.")
+        return srt_path
+
     print(f"Transcribing {video_path} using Whisper ({model_size})...")
     
     import whisper
@@ -67,41 +77,32 @@ def transcribe_audio(video_path, model_size="base"):
     model = whisper.load_model(model_size)
     result = model.transcribe(str(video_path))
     
-    # Save SRT
-    output_dir = os.path.dirname(video_path)
-    audio_basename = os.path.basename(video_path).rsplit('.', 1)[0]
-    
     writer = get_writer("srt", output_dir)
     writer(result, audio_basename)
     
-    srt_path = os.path.join(output_dir, f"{audio_basename}.srt")
     print(f"Transcription saved to {srt_path}")
     return srt_path
 
-def translate_srt(srt_path, target_lang="zh-CN"):
+def translate_srt(srt_path, target_lang="zh-CN", skip_existing=False):
     """Translate SRT file to target language."""
+    translated_srt_path = srt_path.replace('.srt', f'.{target_lang}.srt')
+    
+    if skip_existing and os.path.exists(translated_srt_path):
+        print(f"Translated SRT file already exists at {translated_srt_path}, skipping translation.")
+        return translated_srt_path
+
     print(f"Translating {srt_path} to {target_lang}...")
     
     from deep_translator import GoogleTranslator
     
     translator = GoogleTranslator(source='auto', target=target_lang)
     
-    translated_lines = []
-    
     with open(srt_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
-    
-    # Simple SRT parser: translate only lines that are text (not index or simple timestamps)
-    # A more robust parser would be better, but this works for standard Whisper output
-    
-    translated_srt_path = srt_path.replace('.srt', f'.{target_lang}.srt')
     
     with open(translated_srt_path, 'w', encoding='utf-8') as f_out:
         for line in lines:
             stripped = line.strip()
-            
-            # Identify if line is text to translate
-            # Heuristic: It's text if it's not a number (index) and doesn't contain "-->" (timestamp) and is not empty
             if stripped and not stripped.isdigit() and "-->" not in stripped:
                 try:
                     translated = translator.translate(stripped)
@@ -114,99 +115,6 @@ def translate_srt(srt_path, target_lang="zh-CN"):
 
     print(f"Translation saved to {translated_srt_path}")
     return translated_srt_path
-
-def post_process_subtitles(srt_path):
-    """
-    Resize English words and numbers in the SRT file to be smaller than Chinese characters.
-    Uses ASS/SSA override tags {\fscx80\fscy80} supported by libass/ffmpeg.
-    """
-    print(f"Post-processing subtitles in {srt_path}...")
-    
-    import re
-    
-    with open(srt_path, 'r', encoding='utf-8') as f:
-        content = f.read()
-        
-    # Regex to find English words, numbers, and associated punctuation
-    # We want to match continuous blocks of Latin characters/numbers
-    # Avoid matching SRT timestamps (00:00:00,000) or index numbers
-    # But since we are processing the whole file, we need to be careful not to break the structure.
-    # Safer approach: Process line by line, and identify 'text' lines again.
-    
-    lines = content.splitlines()
-    processed_lines = []
-    
-    # Simple state machine to identify text lines
-    # 1. Index (digits)
-    # 2. Timestamp (contains -->)
-    # 3. Text (everything else until blank line)
-    
-    for line in lines:
-        stripped = line.strip()
-        
-        # Check if it's a metadata line (index or timestamp)
-        is_metadata = False
-        if stripped.isdigit():
-            is_metadata = True
-        elif "-->" in stripped:
-            is_metadata = True
-        elif not stripped: # Empty line
-            is_metadata = True
-            
-        if not is_metadata:
-            # It's a text line. Apply formatting.
-            # Match sequences of [a-zA-Z0-9] and basic punctuation that looks like English/Code
-            # We want to wrap them in {\fscx75\fscy75} ... {\fscx100\fscy100}
-            # Note: 80% might still be large, trying 75%
-            
-            # This regex matches words containing at least one latin char or number, 
-            # allowing for some punctuation but trying to avoid capturing Chinese punctuation if possible.
-            # \u0000-\u007F covers Basic Latin.
-            # We'll target contiguous runs of non-Chinese/non-CJ characters that contain at least one alphanumeric.
-            
-            def resize_match(match):
-                text = match.group(0)
-                # Don't resize if it's just a space or purely punctuation
-                if not any(c.isalnum() for c in text):
-                    return text
-                return f"{{\\fscx75\\fscy75}}{text}{{\\fscx100\\fscy100}}"
-            
-            # Pattern: non-Chinese characters (broadly). 
-            # \u4e00-\u9fff is CJK Unified Ideographs.
-            # We'll keep it simple: [a-zA-Z0-9\.\-\s]+
-            # But we must ensure we don't match the whole line if it's mixed.
-            
-            # Let's match explicit English/Number blocks.
-            # [a-zA-Z0-9]+ plus optional punctuation/spaces around it, but usually standard English text
-            # regex: ([a-zA-Z0-9][a-zA-Z0-9\s\.\,\:\-\(\)]*[a-zA-Z0-9]) | ([a-zA-Z0-9]+)
-            
-            # Simpler: [a-zA-Z0-9\.\,\:\-\(\)\s]+
-            # But avoid capturing Chinese spaces if possible (though they are usually different unicode)
-            
-            # Regex explanation:
-            # [a-zA-Z0-9] : Start with alphanum
-            # [a-zA-Z0-9\s\.\,\-\(\)\']* : allow content
-            # (?<!\s) : Don't end with space (trim)
-            
-            # Actually, simply matching [a-zA-Z0-9]+ is too fragmented ("open" "BIM" vs "openBIM").
-            # Let's try to match broader phrases.
-            
-            # Substitution
-            new_line = re.sub(r'([a-zA-Z0-9][a-zA-Z0-9\s\.,\-\(\)\']*[a-zA-Z0-9]|[a-zA-Z0-9]+)', resize_match, line)
-            
-            # Cleanup: If we created adjacent tags like } { , merge them? 
-            # e.g. {\fscx75\fscy75}Word{\fscx100\fscy100} {\fscx75\fscy75}Word2{\fscx100\fscy100}
-            # It's fine for rendering, effectively resets and starts again.
-            
-            processed_lines.append(new_line)
-        else:
-            processed_lines.append(line)
-            
-    # Write back
-    with open(srt_path, 'w', encoding='utf-8') as f:
-        f.write("\n".join(processed_lines))
-        
-    print("Subtitle post-processing complete.")
 
 def embed_subtitles(video_path, srt_path):
     """Embed subtitles into MP4 for QuickTime compatibility."""
@@ -233,9 +141,9 @@ def embed_subtitles(video_path, srt_path):
         print("Warning: Failed to embed subtitles.")
         return None
 
-def burn_subtitles(video_path, srt_path):
+def burn_subtitles(video_path, srt_path, font_name=None):
     """Burn subtitles into video (Hardsub) for web compatibility."""
-    print(f"Burning subtitles into {video_path}...")
+    print(f"Burning subtitles into {video_path}..." + (f" using font '{font_name}'" if font_name else ""))
     
     # Use temporary simple filenames to avoid ffmpeg escaping issues
     video_dir = os.path.dirname(video_path)
@@ -250,10 +158,17 @@ def burn_subtitles(video_path, srt_path):
         os.rename(video_path, temp_video)
         os.rename(srt_path, temp_srt)
         
+        # Build subtitle filter string
+        sub_filter = f"subtitles={os.path.basename(temp_srt)}"
+        if font_name:
+            # Add force_style to specify font
+            # Example: subtitles=filename.srt:force_style='FontName=Arial'
+            sub_filter += f":force_style='FontName={font_name}'"
+
         cmd = [
             "ffmpeg",
             "-i", temp_video,
-            "-vf", f"subtitles={os.path.basename(temp_srt)}",
+            "-vf", sub_filter,
             "-c:a", "copy",
             temp_output,
             "-y"
@@ -293,6 +208,8 @@ def main():
     parser.add_argument("--dir", default=".", help="Output directory")
     parser.add_argument("--model", default="turbo", help="Whisper model size (tiny, base, small, medium, large, turbo)")
     parser.add_argument("--burn", action="store_true", help="Burn subtitles into video (hardsub) for web compatibility")
+    parser.add_argument("--font", help="Specific font for burned subtitles (e.g., 'Heiti SC', 'Arial')")
+    parser.add_argument("--skip-existing", action="store_true", help="Skip transcription/translation if files exist")
     
     args = parser.parse_args()
     
@@ -303,18 +220,15 @@ def main():
     
     try:
         video_path = download_video(args.url, args.dir)
-        srt_path = transcribe_audio(video_path, args.model)
-        translated_srt_path = translate_srt(srt_path)
-        
-        # Post-process for font styling (resize English/Numbers)
-        post_process_subtitles(translated_srt_path)
+        srt_path = transcribe_audio(video_path, args.model, args.skip_existing)
+        translated_srt_path = translate_srt(srt_path, skip_existing=args.skip_existing)
         
         # Always create embedded (soft) for QuickTime
         embed_subtitles(video_path, translated_srt_path)
         
         # Optionally create burned (hard) for Web
         if args.burn:
-            burn_subtitles(video_path, translated_srt_path)
+            burn_subtitles(video_path, translated_srt_path, font_name=args.font)
         
         print("\nDone! Video and subtitles are ready.")
         
