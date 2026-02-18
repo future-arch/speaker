@@ -1,0 +1,17 @@
+downloads/
+live_test_output/
+test_output/
+outputs/
+__pycache__/
+*.mp4
+*.mp3
+*.m4a
+*.srt
+*.vtt
+*.webp
+*.mov
+.DS_Store
+.env
+venv/
+.idea/
+.vscode/

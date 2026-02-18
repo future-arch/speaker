@@ -1,0 +1,4 @@
+yt-dlp>=2023.11.16
+openai-whisper
+deep-translator
+torch
